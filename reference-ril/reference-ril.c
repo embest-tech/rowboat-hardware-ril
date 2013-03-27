@@ -1095,11 +1095,15 @@ static void requestSetupDataCall(void *data, size_t datalen, RIL_Token t)
             pdp_type = "IP";
         }
 
-        asprintf(&cmd, "AT+CGDCONT=1,\"%s\",\"%s\",,0,0", pdp_type, apn);
+	
+        err = at_send_command("ATZ", &p_response);
+
+        asprintf(&cmd, "AT+CGDCONT=1,\"%s\",\"%s\"", pdp_type, apn);
         //FIXME check for error here
         err = at_send_command(cmd, NULL);
         free(cmd);
 
+#if 0
         // Set required QoS params to default
         err = at_send_command("AT+CGQREQ=1", NULL);
 
@@ -1112,6 +1116,7 @@ static void requestSetupDataCall(void *data, size_t datalen, RIL_Token t)
         // Hangup anything that's happening there now
         err = at_send_command("AT+CGACT=1,0", NULL);
 
+#endif
         // Start data on PDP context 1
         err = at_send_command("ATD*99***1#", &p_response);
 
@@ -2102,11 +2107,16 @@ mainLoop(void *param)
                                             SOCK_STREAM );
             } else if (s_device_path != NULL) {
                 fd = open (s_device_path, O_RDWR);
-                if ( fd >= 0 && !memcmp( s_device_path, "/dev/ttyS", 9 ) ) {
+                if ( fd >= 0 && !memcmp( s_device_path, "/dev/tty", 8 ) ) {
                     /* disable echo on serial ports */
                     struct termios  ios;
                     tcgetattr( fd, &ios );
                     ios.c_lflag = 0;  /* disable ECHO, ICANON, etc... */
+		    ALOGI("Setting speed");
+                   if( cfsetispeed( &ios, B115200) != 0 )
+                       ALOGE("Failed to set in speed");
+                   if ( cfsetospeed( &ios, B115200) != 0 )
+                       ALOGE("Failed to set out speed");
                     tcsetattr( fd, TCSANOW, &ios );
                 }
             }
