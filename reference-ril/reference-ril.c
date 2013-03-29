@@ -1474,6 +1474,7 @@ onRequest (int request, void *data, size_t datalen, RIL_Token t)
             break;
 
         case RIL_REQUEST_GET_IMEI:
+	case RIL_REQUEST_GET_IMEISV:
             p_response = NULL;
             err = at_send_command_numeric("AT+CGSN", &p_response);
 
