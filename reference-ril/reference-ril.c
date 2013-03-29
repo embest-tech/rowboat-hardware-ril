@@ -731,8 +731,10 @@ static void requestSignalStrength(void *data, size_t datalen, RIL_Token t)
 {
     ATResponse *p_response = NULL;
     int err;
-    int response[2];
     char *line;
+    int ber;
+    int signalStrength;
+    RIL_SignalStrength_v6 curSignalStrength;
 
     err = at_send_command_singleline("AT+CSQ", "+CSQ:", &p_response);
 
@@ -746,15 +748,30 @@ static void requestSignalStrength(void *data, size_t datalen, RIL_Token t)
     err = at_tok_start(&line);
     if (err < 0) goto error;
 
-    err = at_tok_nextint(&line, &(response[0]));
+    err = at_tok_nextint(&line, &signalStrength);
     if (err < 0) goto error;
 
-    err = at_tok_nextint(&line, &(response[1]));
+    err = at_tok_nextint(&line, &ber);
     if (err < 0) goto error;
-
-    RIL_onRequestComplete(t, RIL_E_SUCCESS, response, sizeof(response));
 
     at_response_free(p_response);
+
+
+    curSignalStrength.GW_SignalStrength.signalStrength = signalStrength;
+    curSignalStrength.GW_SignalStrength.bitErrorRate = ber;
+    curSignalStrength.CDMA_SignalStrength.dbm = 0;
+    curSignalStrength.CDMA_SignalStrength.ecio = 0;
+    curSignalStrength.EVDO_SignalStrength.dbm = 0;
+    curSignalStrength.EVDO_SignalStrength.ecio = 0;
+    curSignalStrength.EVDO_SignalStrength.signalNoiseRatio = 0;
+    curSignalStrength.LTE_SignalStrength.signalStrength = 0;
+    curSignalStrength.LTE_SignalStrength.rsrp = 0;
+    curSignalStrength.LTE_SignalStrength.rsrq = 0;
+    curSignalStrength.LTE_SignalStrength.rssnr = 0;
+    curSignalStrength.LTE_SignalStrength.cqi = 0;
+
+    ALOGI("SignalStrength %d BER: %d", signalStrength, ber);
+    RIL_onUnsolicitedResponse(RIL_UNSOL_SIGNAL_STRENGTH, &curSignalStrength, sizeof(curSignalStrength));
     return;
 
 error:
