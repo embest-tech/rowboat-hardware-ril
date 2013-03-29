@@ -33,6 +33,7 @@
 #include <cutils/sockets.h>
 #include <termios.h>
 #include <sys/system_properties.h>
+#include <cutils/properties.h>
 
 #include "ril.h"
 #include "hardware/qemu_pipe.h"
@@ -43,7 +44,7 @@
 #define MAX_AT_RESPONSE 0x1000
 
 /* pathname returned from RIL_REQUEST_SETUP_DATA_CALL / RIL_REQUEST_SETUP_DEFAULT_PDP */
-#define PPP_TTY_PATH "eth0"
+#define PPP_TTY_PATH "ppp1"
 
 #ifdef USE_TI_COMMANDS
 
@@ -1008,12 +1009,42 @@ error:
     at_response_free(p_response);
 }
 
+static int wait_for_property(const char *name, const char *desired_value, int maxwait)
+{
+    char value[PROPERTY_VALUE_MAX] = {'\0'};
+    int maxnaps = maxwait / 1;
+
+    if (maxnaps < 1) {
+        maxnaps = 1;
+    }
+
+    while (maxnaps-- > 0) {
+        usleep(1000000);
+        if (property_get(name, value, NULL)) {
+            if (desired_value == NULL ||
+                    strcmp(value, desired_value) == 0) {
+                return 0;
+            }
+        }
+    }
+    return -1; /* failure */
+}
+
 static void requestSetupDataCall(void *data, size_t datalen, RIL_Token t)
 {
     const char *apn;
     char *cmd;
     int err;
     ATResponse *p_response = NULL;
+
+    char ppp_dnses[(PROPERTY_VALUE_MAX * 2) + 3] = {'\0'};
+    char ppp_local_ip[PROPERTY_VALUE_MAX] = {'\0'};
+    char ril_pppd_tty[PROPERTY_VALUE_MAX] = {'\0'};
+    char ppp_dns1[PROPERTY_VALUE_MAX] = {'\0'};
+    char ppp_dns2[PROPERTY_VALUE_MAX] = {'\0'};
+    char ppp_gw[PROPERTY_VALUE_MAX] = {'\0'};
+    int n = 1;
+    RIL_Data_Call_Response_v6 *responses = alloca(n* sizeof(RIL_Data_Call_Response_v6));
 
     apn = ((const char **)data)[2];
 
@@ -1035,70 +1066,8 @@ static void requestSetupDataCall(void *data, size_t datalen, RIL_Token t)
 
     ALOGD("requesting data connection to APN '%s'", apn);
 
-    fd = open ("/dev/qmi", O_RDWR);
-    if (fd >= 0) { /* the device doesn't exist on the emulator */
 
-        ALOGD("opened the qmi device\n");
-        asprintf(&cmd, "up:%s", apn);
-        len = strlen(cmd);
-
-        while (cur < len) {
-            do {
-                written = write (fd, cmd + cur, len - cur);
-            } while (written < 0 && errno == EINTR);
-
-            if (written < 0) {
-                ALOGE("### ERROR writing to /dev/qmi");
-                close(fd);
-                goto error;
-            }
-
-            cur += written;
-        }
-
-        // wait for interface to come online
-
-        do {
-            sleep(1);
-            do {
-                rlen = read(fd, status, 31);
-            } while (rlen < 0 && errno == EINTR);
-
-            if (rlen < 0) {
-                ALOGE("### ERROR reading from /dev/qmi");
-                close(fd);
-                goto error;
-            } else {
-                status[rlen] = '\0';
-                ALOGD("### status: %s", status);
-            }
-        } while (strncmp(status, "STATE=up", 8) && strcmp(status, "online") && --retry);
-
-        close(fd);
-
-        if (retry == 0) {
-            ALOGE("### Failed to get data connection up\n");
-            goto error;
-        }
-
-        qmistatus = system("netcfg rmnet0 dhcp");
-
-        ALOGD("netcfg rmnet0 dhcp: status %d\n", qmistatus);
-
-        if (qmistatus < 0) goto error;
-
-    } else {
-
-        if (datalen > 6 * sizeof(char *)) {
-            pdp_type = ((const char **)data)[6];
-        } else {
-            pdp_type = "IP";
-        }
-
-	
-        err = at_send_command("ATZ", &p_response);
-
-        asprintf(&cmd, "AT+CGDCONT=1,\"%s\",\"%s\"", pdp_type, apn);
+        asprintf(&cmd, "AT+CGDCONT=1,\"%s\",\"%s\",,0,0", pdp_type, apn);
         //FIXME check for error here
         err = at_send_command(cmd, NULL);
         free(cmd);
@@ -1123,12 +1092,44 @@ static void requestSetupDataCall(void *data, size_t datalen, RIL_Token t)
         if (err < 0 || p_response->success == 0) {
             goto error;
         }
-    }
-
-    requestOrSendDataCallList(&t);
 
     at_response_free(p_response);
 
+    sleep(1); //Wait for the modem to finish
+    char pppd_cmd[4096] = {'\0'};
+
+    sprintf(pppd_cmd,"/system/bin/pppd /dev/ttyUSB0 115200 linkname datakey unit 1 crtscts usepeerdns noauth defaultroute noipdefault ipcp-accept-local ipcp-accept-remote ipcp-max-failure 30 lcp-echo-interval 5 lcp-echo-failure 30 modem dump debug kdebug 8");
+    ALOGI("Calling pppd :  %s", pppd_cmd);
+    system(pppd_cmd);
+    // Dialup 
+    sleep(4);
+
+    ALOGI("Waiting For Property");
+    if (wait_for_property("net.ppp1.local-ip", NULL, 50) < 0) {
+        ALOGE("Timeout waiting net.ppp1.local-ip - giving up!\n");
+	    //.goto error;
+    }
+
+    property_get("net.ppp1.local-ip", ppp_local_ip, NULL);
+    property_get("net.ppp1.dns1", ppp_dns1, NULL);
+    property_get("net.ppp1.dns2", ppp_dns2, NULL);
+    property_get("net.ppp1.gw", ppp_gw, NULL);
+    sprintf(ppp_dnses, "%s %s", ppp_dns1, ppp_dns2);
+
+    ALOGI("Got net.ppp1.local-ip: %s\n", ppp_local_ip);
+
+    responses[0].status = 0;
+    responses[0].suggestedRetryTime = -1;
+    responses[0].cid = 1;
+    responses[0].active = 2;
+    responses[0].type = "PPP";
+    responses[0].ifname = PPP_TTY_PATH;
+    responses[0].addresses = ppp_local_ip;
+    responses[0].dnses = ppp_dnses;
+    responses[0].gateways = ppp_gw;
+
+    RIL_onRequestComplete(t, RIL_E_SUCCESS, responses,
+                          n * sizeof(RIL_Data_Call_Response_v6));
     return;
 error:
     RIL_onRequestComplete(t, RIL_E_GENERIC_FAILURE, NULL, 0);
